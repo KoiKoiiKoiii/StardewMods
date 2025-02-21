@@ -39,23 +39,29 @@ internal static class Content
     {
         Log("Getting raw blacklist.");
         BlacklistRaw = Config.Blacklist;
-        if (BlacklistRaw is null)
+        if (string.IsNullOrWhiteSpace(BlacklistRaw))
         {
             Log("No characters in blacklist.");
+            BlacklistParsed = new List<string>();
+            return;
         }
 
-        var charsToRemove = new[] { "-", ",", ".", ";", "\"", "\'", "/" };
-        foreach (var c in charsToRemove)
-        {
-            BlacklistRaw = BlacklistRaw?.Replace(c, string.Empty);
-        }
+        BlacklistRaw = BlacklistRaw.Replace("-", string.Empty)
+                                   .Replace(",", string.Empty)
+                                   .Replace(".", string.Empty)
+                                   .Replace(";", string.Empty)
+                                   .Replace("\"", string.Empty)
+                                   .Replace("'", string.Empty)
+                                   .Replace("/", string.Empty);
+
         if (Config.Verbose)
         {
             Log($"Raw blacklist: \n {BlacklistRaw} \nWill be parsed to list now.", LogLevel.Debug);
         }
-        BlacklistParsed = BlacklistRaw?.Split(' ').ToList();
-    }
 
+        BlacklistParsed = BlacklistRaw.Split(' ', StringSplitOptions.RemoveEmptyEntries).ToList();
+
+    }
     internal static void CleanTemp()
     {
         CounterToday = 0;
@@ -173,93 +179,104 @@ internal static class Content
             return;
         }
 
-        var logLevel = Config.Verbose ? LogLevel.Debug : LogLevel.Trace;
-#if DEBUG
-        logLV = LogLevel.Debug;
-#endif
+        var logLV = Config.Verbose ? LogLevel.Debug : LogLevel.Trace;
 
-        Log("Began obtaining all visitors.", logLevel);
+        Log("Began obtaining all visitors.", logLV);
         if (!string.IsNullOrWhiteSpace(Config.Blacklist))
             ParseBlacklist();
         
         MaxTimeStay = Config.Duration - 1;
-        Log($"MaxTimeStay = {MaxTimeStay}; Config.Duration = {Config.Duration};", logLevel);
+        Log($"MaxTimeStay = {MaxTimeStay}; Config.Duration = {Config.Duration};", logLV);
 
         PlayerHome = Utility.getHomeOfFarmer(Game1.player);
 
         //get all friended excluding children and spouses/divorced
-        foreach (var pair in Game1.player.friendshipData.Pairs)
+        
+        if (Game1.player.friendshipData?.Pairs == null || !Game1.player.friendshipData.Pairs.Any())
         {
-
-            Log($"Name: {pair.Key}");
-
-            var hearts = pair.Value.Points / 250;
-            var isDivorced = pair.Value.IsDivorced();
-            var isMarried = pair.Value.IsMarried() || pair.Value.IsRoommate();
-
-            if (!isMarried && hearts > 0)
+            Log("No friendship data available.", LogLevel.Warn);
+            return;
+        }
+        else
+        {
+            foreach (var pair in Game1.player.friendshipData.Pairs)
             {
-                if (BlacklistParsed != null)
+
+                Log($"Name: {pair.Key}");
+
+                var hearts = pair.Value.Points / 250;
+                var isDivorced = pair.Value.IsDivorced();
+                var isMarried = pair.Value.IsMarried() || pair.Value.IsRoommate();
+
+                if (!isMarried && hearts > 0)
                 {
-                    if (BlacklistParsed.Contains(pair.Key))
+                    if (BlacklistParsed != null)
                     {
-                        Log($"{pair.Key} is in the blacklist.", LogLevel.Debug);
+                        if (BlacklistParsed.Contains(pair.Key))
+                        {
+                            Log($"{pair.Key} is in the blacklist.", LogLevel.Debug);
+                        }
+                        else
+                        {
+                            if (Utility.fuzzyCharacterSearch(pair.Key) != null)
+                                NameAndLevel.Add(pair.Key, hearts);
+                            else if (FirstLoadedDay)
+                                Log($"Couldn't find character {pair.Key} in world. They won't be included.");
+                        }
+                    }
+                    else if (isDivorced)
+                    {
+                        Log($"{pair} is Divorced.");
                     }
                     else
                     {
-                        if (Utility.fuzzyCharacterSearch(pair.Key) != null)
-                            NameAndLevel.Add(pair.Key, hearts);
-                        else if (FirstLoadedDay)
-                            Log($"Couldn't find character {pair.Key} in world. They won't be included.");
-                    }
-                }
-                else if (isDivorced)
-                {
-                    Log($"{pair} is Divorced.");
-                }
-                else
-                {
-                    if (pair.Key.Equals("Dwarf"))
-                    {
-                        if (!Game1.player.canUnderstandDwarves)
-                            Log("Player can't understand dwarves yet!");
+                        if (pair.Key.Equals("Dwarf"))
+                        {
+                            if (!Game1.player.canUnderstandDwarves)
+                                Log("Player can't understand dwarves yet!");
 
+                            else
+                                NameAndLevel.Add(pair.Key, hearts);
+                        }
                         else
                             NameAndLevel.Add(pair.Key, hearts);
                     }
-                    else
-                        NameAndLevel.Add(pair.Key, hearts);
+                }
+                else
+                {
+                    if (isMarried)
+                    {
+                        MarriedNPCs.Add(pair.Key);
+                        Log($"Adding {pair.Key} to married list...");
+                    }
+                    if (isDivorced)
+                    {
+                        Log($"{pair.Key} is Divorced. They won't visit the player", logLV);
+                    }
                 }
             }
-            else
-            {
-                if (isMarried)
-                {
-                    MarriedNPCs.Add(pair.Key);
-                    Log($"Adding {pair.Key} to married list...");
-                }
-                if (isDivorced)
-                {
-                    Log($"{pair.Key} is Divorced. They won't visit the player", logLevel);
-                }
-            }
+
         }
 
         #region log data
         var call = "\n Name   | Hearts\n--------------------";
         foreach (var pair in NameAndLevel)
         {
-            var separator = pair.Key.Length > 15 ? " " : "               ".Remove(0, pair.Key.Length);
-            
-            var fixedstr = pair.Key + separator;
-            
-            call += $"\n   {fixedstr} {pair.Value}";
+            if (!string.IsNullOrEmpty(pair.Key))
+            {
+                var fixedstr = pair.Key.PadRight(15);
+                call += $"\n   {fixedstr} {pair.Value}";
+            }
+            else
+            {
+                Log("Warning: Encountered an NPC with an empty or null name.", LogLevel.Warn);
+            }
 
             var tempdict = Enumerable.Repeat(pair.Key, pair.Value).ToList();
             RepeatedByLV.AddRange(tempdict);
         }
        
-        Log(call, logLevel);
+        Log(call, logLV);
         #endregion
 
         Log("Finished obtaining all visitors.");
